@@ -18,6 +18,7 @@ import os
 from sklearn.metrics import f1_score
 import json
 from temp import entityList
+from torch.nn import functional
 
 
 class Mem2Seq(nn.Module):
@@ -78,12 +79,14 @@ class Mem2Seq(nn.Module):
             os.makedirs(directory)
         torch.save(self.encoder, directory+'/enc.th')
         torch.save(self.decoder, directory+'/dec.th')
-        
+
+    #training    
     def train_batch(self, input_batches, input_lengths, target_batches, 
                     target_lengths, target_index, target_gate, batch_size, clip,
                     teacher_forcing_ratio, reset):  
 
         if reset:
+            print("resetting")
             self.loss = 0
             self.loss_ptr = 0
             self.loss_vac = 0
@@ -417,7 +420,6 @@ class EncoderMemNN(nn.Module):
         else:
             return Variable(torch.zeros(bsz, self.embedding_dim))
 
-
     def forward(self, story):
         story = story.transpose(0,1)
         story_size = story.size() # b * m * 3 
@@ -430,8 +432,10 @@ class EncoderMemNN(nn.Module):
                 if USE_CUDA: a = a.cuda()
                 story = story*a.long()
         u = [self.get_state(story.size(0))]
+        print(u)
         for hop in range(self.max_hops):
             embed_A = self.C[hop](story.contiguous().view(story.size(0), -1).long()) # b * (m * s) * e
+            print(embed_A)
             embed_A = embed_A.view(story_size+(embed_A.size(-1),)) # b * m * s * e
             m_A = torch.sum(embed_A, 2).squeeze(2) # b * m * e
 
@@ -526,5 +530,52 @@ class AttrProxy(object):
         return getattr(self.module, self.prefix + str(i))
 
 
+def sequence_mask(sequence_length, max_len=None):
+    if max_len is None:
+        max_len = sequence_length.data.max()
+    batch_size = sequence_length.size(0)
+    seq_range = torch.arange(0, max_len).long()
+    seq_range_expand = seq_range.unsqueeze(0).expand(batch_size, max_len)
+    seq_range_expand = Variable(seq_range_expand)
+    if sequence_length.is_cuda:
+        seq_range_expand = seq_range_expand.cuda()
+    seq_length_expand = (sequence_length.unsqueeze(1)
+                         .expand_as(seq_range_expand))
+    return seq_range_expand < seq_length_expand
 
 
+def masked_cross_entropy(logits, target, length):
+    """
+    Args:
+        logits: A Variable containing a FloatTensor of size
+            (batch, max_len, num_classes) which contains the
+            unnormalized probability for each class.
+        target: A Variable containing a LongTensor of size
+            (batch, max_len) which contains the index of the true
+            class for each corresponding step.
+        length: A Variable containing a LongTensor of size (batch,)
+            which contains the length of each data in a batch.
+
+    Returns:
+        loss: An average loss value masked by the length.
+    """
+    if USE_CUDA:
+        length = Variable(torch.LongTensor(length)).cuda()
+    else:
+        length = Variable(torch.LongTensor(length))    
+
+    # logits_flat: (batch * max_len, num_classes)
+    logits_flat = logits.view(-1, logits.size(-1)) ## -1 means infered from other dimentions
+    # log_probs_flat: (batch * max_len, num_classes)
+    log_probs_flat = functional.log_softmax(logits_flat,dim=1)
+    # target_flat: (batch * max_len, 1)
+    target_flat = target.view(-1, 1)
+    # losses_flat: (batch * max_len, 1)
+    losses_flat = -torch.gather(log_probs_flat, dim=1, index=target_flat)
+    # losses: (batch, max_len)
+    losses = losses_flat.view(*target.size())
+    # mask: (batch, max_len)
+    mask = sequence_mask(sequence_length=length, max_len=target.size(1))  
+    losses = losses * mask.float()
+    loss = losses.sum() / length.float().sum()
+    return loss
