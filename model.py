@@ -361,7 +361,6 @@ class Mem2Seq(nn.Module):
             logging.info("\tCAL F1:\t{}".format(microF1_TRUE_cal/float(microF1_PRED_cal))) 
             logging.info("\tWET F1:\t{}".format(microF1_TRUE_wet/float(microF1_PRED_wet))) 
             logging.info("\tNAV F1:\t{}".format(microF1_TRUE_nav/float(microF1_PRED_nav))) 
-        #elif
         elif args['dataset']=='babi' and int(args["task"])==6:
             logging.info("F1 SCORE:\t{}".format(microF1_TRUE/float(microF1_PRED)))
               
