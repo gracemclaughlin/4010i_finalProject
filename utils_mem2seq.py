@@ -47,8 +47,7 @@ class Lang:
             self.n_words += 1
         else:
             self.word2count[word] += 1
-
-
+            
 class Dataset(data.Dataset):
     """Custom data.Dataset compatible with data.DataLoader."""
     def __init__(self, src_seq, trg_seq, index_seq, gate_seq,src_word2id, trg_word2id,max_len, conv_seq,ent,ID,kb_arr):
@@ -250,13 +249,13 @@ def read_langs(file_name, entity, max_line = None):
                 time_counter = 1
                 dialog_counter += 1
     max_len = max([len(d[0]) for d in data])
-    logging.info("Pointer percentace= {} ".format(cnt_ptr/(cnt_ptr+cnt_voc)))
-    logging.info("Max responce Len: {}".format(max_r_len))
-    logging.info("Max Input Len: {}".format(max_len))
+    logging.info("Pointer percentage= {} ".format(cnt_ptr/(cnt_ptr+cnt_voc)))
+    logging.info("Max response Length: {}".format(max_r_len))
+    logging.info("Max Input Length: {}".format(max_len))
     logging.info("Avg. User Utterances: {}".format(user_counter*1.0/dialog_counter))
     logging.info("Avg. Bot Utterances: {}".format(system_counter*1.0/dialog_counter))
     logging.info("Avg. KB results: {}".format(KB_counter*1.0/dialog_counter))
-    logging.info("Avg. responce Len: {}".format(system_res_counter*1.0/system_counter))
+    logging.info("Avg. response Length: {}".format(system_res_counter*1.0/system_counter))
     
     print('Sample: ',data[1][0],data[1][1],data[1][2],data[1][3])
     return data, max_len, max_r_len

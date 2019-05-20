@@ -19,6 +19,8 @@ from sklearn.metrics import f1_score
 import json
 from temp import entityList
 from torch.nn import functional
+from nltk.translate import bleu
+from nltk.translate.bleu_score import sentence_bleu, corpus_bleu, SmoothingFunction
 
 
 class Mem2Seq(nn.Module):
@@ -262,22 +264,22 @@ class Mem2Seq(nn.Module):
         hyp_s = ""
         dialog_acc_dict = {}
 
-        if args['dataset'] == 'kvr':
-            with open('data/KVR/kvret_entities.json') as f:
-                global_entity = json.load(f)
-                global_entity_list = []
-                for key in global_entity.keys():
-                    if key != 'poi':
-                        global_entity_list += [item.lower().replace(' ', '_') for item in global_entity[key]]
-                    else:
-                        for item in global_entity['poi']:
-                            global_entity_list += [item[k].lower().replace(' ', '_') for k in item.keys()]
-                global_entity_list = list(set(global_entity_list))
+        # if args['dataset'] == 'kvr':
+        #     with open('data/KVR/kvret_entities.json') as f:
+        #         global_entity = json.load(f)
+        #         global_entity_list = []
+        #         for key in global_entity.keys():
+        #             if key != 'poi':
+        #                 global_entity_list += [item.lower().replace(' ', '_') for item in global_entity[key]]
+        #             else:
+        #                 for item in global_entity['poi']:
+        #                     global_entity_list += [item[k].lower().replace(' ', '_') for k in item.keys()]
+        #         global_entity_list = list(set(global_entity_list))
+        #else:
+        if int(args["task"])!=6:
+            global_entity_list = entityList('data/dialog-bAbI-tasks/dialog-babi-kb-all.txt',int(args["task"]))
         else:
-            if int(args["task"])!=6:
-                global_entity_list = entityList('data/dialog-bAbI-tasks/dialog-babi-kb-all.txt',int(args["task"]))
-            else:
-                global_entity_list = entityList('data/dialog-bAbI-tasks/dialog-babi-task6-dstc2-kb.txt',int(args["task"]))
+            global_entity_list = entityList('data/dialog-bAbI-tasks/dialog-babi-task6-dstc2-kb.txt',int(args["task"]))
 
         pbar = tqdm(enumerate(dev),total=len(dev))
         for j, data_dev in pbar: 
@@ -331,9 +333,9 @@ class Mem2Seq(nn.Module):
                 else:
                     if (correct == st):
                         acc+=1
-                #    print("Correct:"+str(correct))
-                #    print("\tPredict:"+str(st))
-                #    print("\tFrom:"+str(self.from_whichs[:,i]))
+                    print("Correct:"+str(correct))
+                    print("\tPredict:"+str(st))
+                    print("\tFrom:"+str(self.from_whichs[:,i]))
 
                 w += wer(correct,st)
                 ref.append(str(correct))
@@ -359,13 +361,18 @@ class Mem2Seq(nn.Module):
             logging.info("\tCAL F1:\t{}".format(microF1_TRUE_cal/float(microF1_PRED_cal))) 
             logging.info("\tWET F1:\t{}".format(microF1_TRUE_wet/float(microF1_PRED_wet))) 
             logging.info("\tNAV F1:\t{}".format(microF1_TRUE_nav/float(microF1_PRED_nav))) 
+        #elif
         elif args['dataset']=='babi' and int(args["task"])==6:
             logging.info("F1 SCORE:\t{}".format(microF1_TRUE/float(microF1_PRED)))
               
-        bleu_score = moses_multi_bleu(np.array(hyp), np.array(ref), lowercase=True) 
+        hyp_tokens = [line.split(" ") for line in np.array(hyp)]
+        ref_tokens = [line.split(" ") for line in np.array(ref)]
+        smooth = SmoothingFunction().method4
+        bleu_score = corpus_bleu(ref_tokens, hyp_tokens, smoothing_function= smooth)
+       
         logging.info("BLEU SCORE:"+str(bleu_score))     
         if (BLEU):                                                               
-            if (bleu_score >= avg_best):
+            if (int(bleu_score) >= avg_best):
                 self.save_model(str(self.name)+str(bleu_score))
                 logging.info("MODEL SAVED")  
             return bleu_score
@@ -432,10 +439,10 @@ class EncoderMemNN(nn.Module):
                 if USE_CUDA: a = a.cuda()
                 story = story*a.long()
         u = [self.get_state(story.size(0))]
-        print(u)
+        #print(u)
         for hop in range(self.max_hops):
             embed_A = self.C[hop](story.contiguous().view(story.size(0), -1).long()) # b * (m * s) * e
-            print(embed_A)
+            #print(embed_A)
             embed_A = embed_A.view(story_size+(embed_A.size(-1),)) # b * m * s * e
             m_A = torch.sum(embed_A, 2).squeeze(2) # b * m * e
 
