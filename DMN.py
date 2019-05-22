@@ -48,3 +48,4 @@ def DMN(object):
         self.q_holder = tf.placeholder(tf.int32, shape=(self.config.bsz, self.max_response))
         self.in_holder = tf.placeholder(tf.int32, shape=(self.bsz, self.max_sent, self.max_sen_len))
         
+        

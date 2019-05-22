@@ -18,9 +18,6 @@ import datetime
 import ast
 from temp import entityList
 
-def hasNumbers(inputString):
-    return any(char.isdigit() for char in inputString)
-
 MEM_TOKEN_SIZE = 3
 
 class Lang:

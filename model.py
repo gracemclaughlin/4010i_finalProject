@@ -27,7 +27,7 @@ from nltk.translate.bleu_score import sentence_bleu, corpus_bleu, SmoothingFunct
 class Mem2Seq(nn.Module):
     def __init__(self, hidden_size, max_len, max_r, lang, path, task, lr, n_layers, dropout, unk_mask):
         super(Mem2Seq, self).__init__()
-        self.name = "Mem2Seq"
+        #self.name = "Mem2Seq"
         self.task = task
         self.input_size = lang.n_words
         self.output_size = lang.n_words
@@ -78,13 +78,13 @@ class Mem2Seq(nn.Module):
 
   
     def save_model(self, dec_type):
-        name_data = "KVR/" if self.task=='' else "BABI/"
-        directory = 'save/mem2seq-'+name_data+str(self.task)+'HDD'+str(self.hidden_size)+'BSZ'+str(args['batch'])+'DR'+str(self.dropout)+'L'+str(self.n_layers)+'lr'+str(self.lr)+str(dec_type)                 
+        #name_data = "KVR/" if self.task=='' else "BABI/"
+        directory = 'savedmodels/mem2seq-BABI/'+str(self.task)+'HDD'+str(self.hidden_size)+'BSZ'+str(args['batch'])+'DR'+str(self.dropout)+'L'+str(self.n_layers)+'lr'+str(self.lr)+str(dec_type)                 
         if not os.path.exists(directory):
             os.makedirs(directory)
         torch.save(self.encoder, directory+'/enc.th')
         torch.save(self.decoder, directory+'/dec.th')
-
+        return directory
     #training    
     def train_batch(self, input_batches, input_lengths, target_batches, 
                     target_lengths, target_index, target_gate, batch_size, clip,
@@ -206,6 +206,7 @@ class Mem2Seq(nn.Module):
             #all_decoder_outputs_gate = all_decoder_outputs_gate.cuda()
             decoder_input = decoder_input.cuda()
         
+        #this
         p = []
         for elm in src_plain:
             elm_temp = [ word_triple[0] for word_triple in elm ]
@@ -213,6 +214,8 @@ class Mem2Seq(nn.Module):
         
         self.from_whichs = []
         acc_gate,acc_ptr,acc_vac = 0.0, 0.0, 0.0
+
+
         # Run through decoder one time step at a time
         for t in range(self.max_r):
             decoder_ptr,decoder_vocab, decoder_hidden = self.decoder.ptrMemDecoder(decoder_input, decoder_hidden)
@@ -240,6 +243,7 @@ class Mem2Seq(nn.Module):
                         temp.append(self.lang.index2word[ind])
                     from_which.append('v')
             decoded_words.append(temp)
+            
             self.from_whichs.append(from_which)
         self.from_whichs = np.array(self.from_whichs)
 
@@ -344,18 +348,18 @@ class Mem2Seq(nn.Module):
         smooth = SmoothingFunction().method4
         bleu_score = corpus_bleu(ref_tokens, hyp_tokens, smoothing_function= smooth)
        
-        logging.info("BLEU SCORE:"+str(bleu_score))     
-        if (BLEU):                                                               
-            if (int(bleu_score) >= avg_best):
-                self.save_model(str(self.name)+str(bleu_score))
-                logging.info("MODEL SAVED")  
-            return bleu_score
-        else:
-            acc_avg = acc_avg/float(len(dev))
-            if (acc_avg >= avg_best):
-                self.save_model(str(self.name)+str(acc_avg))
-                logging.info("MODEL SAVED")
-            return acc_avg
+        # logging.info("BLEU SCORE:"+str(bleu_score))     
+        # if (BLEU):                                                               
+        #     if (int(bleu_score) >= avg_best):
+        #         self.save_model(str(bleu_score))
+        #         logging.info("MODEL SAVED")  
+        #     return bleu_score
+        # else:
+        acc_avg = acc_avg/float(len(dev))
+        if (acc_avg >= avg_best):
+            directory = self.save_model(str(acc_avg))
+            logging.info("MODEL SAVED")
+        return acc_avg, directory
 
     def compute_prf(self, gold, pred, global_entity_list, kb_plain):
         local_kb_word = [k[0] for k in kb_plain]
@@ -481,29 +485,13 @@ class DecoderMemNN(nn.Module):
         embed_q = self.C[0](enc_query) # b * e
         output, hidden = self.gru(embed_q.unsqueeze(0), last_hidden)
         temp = []
-        # ques_rep = self.gru(embed_q, last_hidden)
-        # ques_rep = ques_rep[self.input_size-1]
-        # ques_rep = tf.reshape(ques_rep, [self.bsz, 1, self.hidden_size])
-        # episodic_memory = tf.identity(ques_rep)
-        # encoded_input = tf.transpose(encoded_input, [1,0,2])
         u = [hidden[0].squeeze()]   
-        episodic_memory = tf.identity(enc_query)
-
-        #encoded input reshape?? 
-        # https://github.com/JRC1995/Dynamic-Memory-Network-Plus/blob/master/DMN%2B.ipynb 
         for hop in range(self.max_hops):
             m_A = self.m_story[hop]
             if(len(list(u[-1].size()))==1): u[-1] = u[-1].unsqueeze(0) ## used for bsz = 1.
             u_temp = u[-1].unsqueeze(1).expand_as(m_A)
-    
-
             prob_lg = torch.sum(m_A*u_temp, 2)
-
             prob_   = self.softmax(prob_lg)
-
-            #prob = tf.transpose(prob, [2,0,1])
-            #context_vec = attention_based_GRU(tf.transpose(u))
-
             m_C = self.m_story[hop+1]
             temp.append(prob_)
             prob = prob_.unsqueeze(2).expand_as(m_C)
@@ -512,19 +500,20 @@ class DecoderMemNN(nn.Module):
                 p_vocab = self.W1(torch.cat((u[0], o_k),1))
             u_k = u[-1] + o_k
             u.append(u_k)
-
         p_ptr = prob_lg 
         return p_ptr, p_vocab, hidden
 
     def episodic_update(ct, prev_m, q, wt, b):
         m = T.nn.relu(wt[T.concatenate([prev_m, ct, q])]+b)
-    return m 
+        return m 
 
     def episode_attend(self, x, g, h):
         #r = sigmoid
         #_h = tanh
         ht = g*_h +(1. -g)*h
-    return ht
+        return ht
+
+
 
 class AttrProxy(object):
     """
