@@ -19,6 +19,7 @@ from sklearn.metrics import f1_score
 import json
 from temp import entityList
 from torch.nn import functional
+import tensorflow as tf
 from nltk.translate import bleu
 from nltk.translate.bleu_score import sentence_bleu, corpus_bleu, SmoothingFunction
 
@@ -32,28 +33,30 @@ class Mem2Seq(nn.Module):
         self.output_size = lang.n_words
         self.hidden_size = hidden_size
         self.max_len = max_len ## max input
-        self.max_r = max_r ## max responce len        
+        self.max_r = max_r ## max response len        
         self.lang = lang
         self.lr = lr
         self.n_layers = n_layers
         self.dropout = dropout
         self.unk_mask = unk_mask
         
-        # if path:
-        #     if USE_CUDA:
-        #         logging.info("MODEL {} LOADED".format(str(path)))
-        #         self.encoder = torch.load(str(path)+'/enc.th')
-        #         self.decoder = torch.load(str(path)+'/dec.th')
-        #     else:
-        #         logging.info("MODEL {} LOADED".format(str(path)))
-        #         self.encoder = torch.load(str(path)+'/enc.th',lambda storage, loc: storage)
-        #         self.decoder = torch.load(str(path)+'/dec.th',lambda storage, loc: storage)
-        # else:
-        self.encoder = EncoderMemNN(lang.n_words, hidden_size, n_layers, self.dropout, self.unk_mask)
-        self.decoder = DecoderMemNN(lang.n_words, hidden_size, n_layers, self.dropout, self.unk_mask)
+        if path:
+            if USE_CUDA:
+                logging.info("MODEL {} LOADED".format(str(path)))
+                self.encoder = torch.load(str(path)+'/enc.th')
+                self.decoder = torch.load(str(path)+'/dec.th')
+                #self.extKnow = torch.load(str(path)+'/enc_kb.th')
+            else:
+                logging.info("MODEL {} LOADED".format(str(path)))
+                self.encoder = torch.load(str(path)+'/enc.th',lambda storage, loc: storage)
+                self.decoder = torch.load(str(path)+'/dec.th',lambda storage, loc: storage)
+        else:
+            self.encoder = EncoderMemNN(lang.n_words, hidden_size, n_layers, self.dropout, self.unk_mask)
+            self.decoder = DecoderMemNN(lang.n_words, hidden_size, n_layers, self.dropout, self.unk_mask)
         # Initialize optimizers and criterion
         self.encoder_optimizer = optim.Adam(self.encoder.parameters(), lr=lr)
         self.decoder_optimizer = optim.Adam(self.decoder.parameters(), lr=lr)
+        #self.extKnow_optimizer = optim.Adam(self.extKnow.parameters(), lr=lr)
         self.scheduler = lr_scheduler.ReduceLROnPlateau(self.decoder_optimizer,mode='max',factor=0.5,patience=1,min_lr=0.0001, verbose=True)
         self.criterion = nn.MSELoss()
         self.loss = 0
@@ -98,6 +101,7 @@ class Mem2Seq(nn.Module):
         # Zero gradients of both optimizers
         self.encoder_optimizer.zero_grad()
         self.decoder_optimizer.zero_grad()
+    
         loss_Vocab,loss_Ptr= 0,0
 
         # Run words through encoder
@@ -107,40 +111,50 @@ class Mem2Seq(nn.Module):
         # Prepare input and output variables
         decoder_input = Variable(torch.LongTensor([SOS_token] * batch_size))
         
+        #generate tokens with inputs pointing to memory
         max_target_length = max(target_lengths)
         all_decoder_outputs_vocab = Variable(torch.zeros(max_target_length, batch_size, self.output_size))
         all_decoder_outputs_ptr = Variable(torch.zeros(max_target_length, batch_size, input_batches.size(0)))
-
+        all_decoder_outputs_mem = Variable(torch.zeros(max_target_length, batch_size, input_batches.size(0)))
         # Move new Variables to CUDA
         if USE_CUDA:
             all_decoder_outputs_vocab = all_decoder_outputs_vocab.cuda()
             all_decoder_outputs_ptr = all_decoder_outputs_ptr.cuda()
+            all_decoder_outputs_mem = all_decoder_outputs_mem.cuda()
             decoder_input = decoder_input.cuda()
 
-        # Choose whether to use teacher forcing
-        use_teacher_forcing = random.random() < teacher_forcing_ratio
-        
-        if use_teacher_forcing:    
-            # Run through decoder one time step at a time
-            for t in range(max_target_length):
-                decoder_ptr, decoder_vocab, decoder_hidden  = self.decoder.ptrMemDecoder(decoder_input, decoder_hidden)
-                all_decoder_outputs_vocab[t] = decoder_vocab
-                all_decoder_outputs_ptr[t] = decoder_ptr
-                decoder_input = target_batches[t]# Chosen word is next input
-                if USE_CUDA: decoder_input = decoder_input.cuda()            
-        else:
-            for t in range(max_target_length):
-                decoder_ptr, decoder_vocab, decoder_hidden = self.decoder.ptrMemDecoder(decoder_input, decoder_hidden)
-                _, toppi = decoder_ptr.data.topk(1)
-                _, topvi = decoder_vocab.data.topk(1)
-                all_decoder_outputs_vocab[t] = decoder_vocab
-                all_decoder_outputs_ptr[t] = decoder_ptr
-                ## get the correspective word in input
-                top_ptr_i = torch.gather(input_batches[:,:,0], 0, Variable(toppi.view(1, -1))).transpose(0,1)
-                next_in = [top_ptr_i[i].item() if (toppi[i].item() < input_lengths[i]-1) else topvi[i].item() for i in range(batch_size)]
+        #if use_DMN:
+            
 
-                decoder_input = Variable(torch.LongTensor(next_in)) # Chosen word is next input
-                if USE_CUDA: decoder_input = decoder_input.cuda()
+        # Choose whether to use teacher forcing
+        # use_teacher_forcing = random.random() < teacher_forcing_ratio
+        
+        # if use_teacher_forcing:    
+        #     # Run through decoder one time step at a time
+        #     for t in range(max_target_length):
+        #         decoder_ptr, decoder_vocab, decoder_hidden  = self.decoder.ptrMemDecoder(decoder_input, decoder_hidden)
+        #         all_decoder_outputs_vocab[t] = decoder_vocab
+        #         all_decoder_outputs_ptr[t] = decoder_ptr
+        #         all_decoder_outputs_mem[t] = decoder_hidden
+        #         decoder_input = target_batches[t]# Chosen word is next input
+        #         if USE_CUDA: decoder_input = decoder_input.cuda()            
+        # else:
+        
+        #periodically update decoder using memory 
+        for t in range(max_target_length):
+            decoder_ptr, decoder_vocab, decoder_hidden = self.decoder.ptrMemDecoder(decoder_input, decoder_hidden)
+            _, toppi = decoder_ptr.data.topk(1)
+            _, topvi = decoder_vocab.data.topk(1)
+            all_decoder_outputs_vocab[t] = decoder_vocab
+            all_decoder_outputs_ptr[t] = decoder_ptr
+            all_decoder_outputs_mem[t] = decoder_hidden
+            ## get the correspective word in input
+            #toppi is max probability  
+            top_ptr_i = torch.gather(input_batches[:,:,0], 0, Variable(toppi.view(1, -1))).transpose(0,1)
+            next_in = [top_ptr_i[i].item() if (toppi[i].item() < input_lengths[i]-1) else topvi[i].item() for i in range(batch_size)]
+
+            decoder_input = Variable(torch.LongTensor(next_in)) # Chosen word is next input
+            if USE_CUDA: decoder_input = decoder_input.cuda()
                   
         #Loss calculation and backpropagation
         loss_Vocab = masked_cross_entropy(
@@ -181,12 +195,14 @@ class Mem2Seq(nn.Module):
         decoded_words = []
         all_decoder_outputs_vocab = Variable(torch.zeros(self.max_r, batch_size, self.output_size))
         all_decoder_outputs_ptr = Variable(torch.zeros(self.max_r, batch_size, input_batches.size(0)))
+        all_decoder_outputs_mem = Variable(torch.zeros(self.max_r, batch_size, input_batches.size(0)))
         #all_decoder_outputs_gate = Variable(torch.zeros(self.max_r, batch_size))
         # Move new Variables to CUDA
 
         if USE_CUDA:
             all_decoder_outputs_vocab = all_decoder_outputs_vocab.cuda()
             all_decoder_outputs_ptr = all_decoder_outputs_ptr.cuda()
+            all_decoder_outputs_mem = all_decoder_outputs_mem.cuda()
             #all_decoder_outputs_gate = all_decoder_outputs_gate.cuda()
             decoder_input = decoder_input.cuda()
         
@@ -263,19 +279,6 @@ class Mem2Seq(nn.Module):
         ref_s = ""
         hyp_s = ""
         dialog_acc_dict = {}
-
-        # if args['dataset'] == 'kvr':
-        #     with open('data/KVR/kvret_entities.json') as f:
-        #         global_entity = json.load(f)
-        #         global_entity_list = []
-        #         for key in global_entity.keys():
-        #             if key != 'poi':
-        #                 global_entity_list += [item.lower().replace(' ', '_') for item in global_entity[key]]
-        #             else:
-        #                 for item in global_entity['poi']:
-        #                     global_entity_list += [item[k].lower().replace(' ', '_') for k in item.keys()]
-        #         global_entity_list = list(set(global_entity_list))
-        #else:
         if int(args["task"])!=6:
             global_entity_list = entityList('data/dialog-bAbI-tasks/dialog-babi-kb-all.txt',int(args["task"]))
         else:
@@ -283,12 +286,8 @@ class Mem2Seq(nn.Module):
 
         pbar = tqdm(enumerate(dev),total=len(dev))
         for j, data_dev in pbar: 
-            if args['dataset']=='kvr':
-                words = self.evaluate_batch(len(data_dev[1]),data_dev[0],data_dev[1],
-                                    data_dev[2],data_dev[3],data_dev[4],data_dev[5],data_dev[6]) 
-            else:
-                words = self.evaluate_batch(len(data_dev[1]),data_dev[0],data_dev[1],
-                        data_dev[2],data_dev[3],data_dev[4],data_dev[5],data_dev[6])          
+            words = self.evaluate_batch(len(data_dev[1]),data_dev[0],data_dev[1],
+                    data_dev[2],data_dev[3],data_dev[4],data_dev[5],data_dev[6])          
 
             acc=0
             w = 0 
@@ -304,39 +303,20 @@ class Mem2Seq(nn.Module):
                 ### compute F1 SCORE  
                 st = st.lstrip().rstrip()
                 correct = correct.lstrip().rstrip()
-                if args['dataset']=='kvr':
-                    f1_true,count = self.compute_prf(data_dev[8][i], st.split(), global_entity_list, data_dev[14][i])
-                    microF1_TRUE += f1_true
-                    microF1_PRED += count
-                    f1_true,count = self.compute_prf(data_dev[9][i], st.split(), global_entity_list, data_dev[14][i])
-                    microF1_TRUE_cal += f1_true
-                    microF1_PRED_cal += count 
-                    f1_true,count = self.compute_prf(data_dev[10][i], st.split(), global_entity_list, data_dev[14][i])
-                    microF1_TRUE_nav += f1_true
-                    microF1_PRED_nav += count 
-                    f1_true, count = self.compute_prf(data_dev[11][i], st.split(), global_entity_list, data_dev[14][i]) 
-                    microF1_TRUE_wet += f1_true
-                    microF1_PRED_wet += count
-                elif args['dataset']=='babi' and int(args["task"])==6:
+        
+                if int(args["task"])==6:
                     f1_true,count = self.compute_prf(data_dev[10][i], st.split(), global_entity_list, data_dev[12][i])
                     microF1_TRUE += f1_true
                     microF1_PRED += count
 
-                if args['dataset']=='babi':
-                    if data_dev[11][i] not in dialog_acc_dict.keys():
-                        dialog_acc_dict[data_dev[11][i]] = []
-                    if (correct == st):
-                        acc+=1
-                        dialog_acc_dict[data_dev[11][i]].append(1)
-                    else:
-                        dialog_acc_dict[data_dev[11][i]].append(0)
+                if data_dev[11][i] not in dialog_acc_dict.keys():
+                    dialog_acc_dict[data_dev[11][i]] = []
+                if (correct == st):
+                    acc+=1
+                    dialog_acc_dict[data_dev[11][i]].append(1)
                 else:
-                    if (correct == st):
-                        acc+=1
-                    print("Correct:"+str(correct))
-                    print("\tPredict:"+str(st))
-                    print("\tFrom:"+str(self.from_whichs[:,i]))
-
+                    dialog_acc_dict[data_dev[11][i]].append(0)
+ 
                 w += wer(correct,st)
                 ref.append(str(correct))
                 hyp.append(str(st))
@@ -349,19 +329,14 @@ class Mem2Seq(nn.Module):
                                                                     wer_avg/float(len(dev))))
 
         # dialog accuracy
-        if args['dataset']=='babi':
-            dia_acc = 0
-            for k in dialog_acc_dict.keys():
-                if len(dialog_acc_dict[k])==sum(dialog_acc_dict[k]):
-                    dia_acc += 1
-            logging.info("Dialog Accuracy:\t"+str(dia_acc*1.0/len(dialog_acc_dict.keys())))
+        #if args['dataset']=='babi':
+        dia_acc = 0
+        for k in dialog_acc_dict.keys():
+            if len(dialog_acc_dict[k])==sum(dialog_acc_dict[k]):
+                dia_acc += 1
+        logging.info("Dialog Accuracy:\t"+str(dia_acc*1.0/len(dialog_acc_dict.keys())))
 
-        if args['dataset']=='kvr':
-            logging.info("F1 SCORE:\t{}".format(microF1_TRUE/float(microF1_PRED)))
-            logging.info("\tCAL F1:\t{}".format(microF1_TRUE_cal/float(microF1_PRED_cal))) 
-            logging.info("\tWET F1:\t{}".format(microF1_TRUE_wet/float(microF1_PRED_wet))) 
-            logging.info("\tNAV F1:\t{}".format(microF1_TRUE_nav/float(microF1_PRED_nav))) 
-        elif args['dataset']=='babi' and int(args["task"])==6:
+        if int(args["task"])==6:
             logging.info("F1 SCORE:\t{}".format(microF1_TRUE/float(microF1_PRED)))
               
         hyp_tokens = [line.split(" ") for line in np.array(hyp)]
@@ -441,8 +416,9 @@ class EncoderMemNN(nn.Module):
         #print(u)
         for hop in range(self.max_hops):
             embed_A = self.C[hop](story.contiguous().view(story.size(0), -1).long()) # b * (m * s) * e
-            #print(embed_A)
             embed_A = embed_A.view(story_size+(embed_A.size(-1),)) # b * m * s * e
+            #print("forward embed")
+            #print(embed_A)
             m_A = torch.sum(embed_A, 2).squeeze(2) # b * m * e
 
             u_temp = u[-1].unsqueeze(1).expand_as(m_A)
@@ -454,7 +430,8 @@ class EncoderMemNN(nn.Module):
             prob = prob.unsqueeze(2).expand_as(m_C)
             o_k  = torch.sum(m_C*prob, 1)
             u_k = u[-1] + o_k
-            u.append(u_k)   
+            u.append(u_k)
+        a_hat = u[-1]@self.C[self.max_hops].weight.transpose(0,1)   
         return u_k
 
 class DecoderMemNN(nn.Module):
@@ -474,6 +451,7 @@ class DecoderMemNN(nn.Module):
         self.W = nn.Linear(embedding_dim,1)
         self.W1 = nn.Linear(2*embedding_dim,self.num_vocab)
         self.gru = nn.GRU(embedding_dim, embedding_dim, dropout=dropout)
+        
 
     def load_memory(self, story):
         story_size = story.size() # b * m * 3 
@@ -503,13 +481,29 @@ class DecoderMemNN(nn.Module):
         embed_q = self.C[0](enc_query) # b * e
         output, hidden = self.gru(embed_q.unsqueeze(0), last_hidden)
         temp = []
+        # ques_rep = self.gru(embed_q, last_hidden)
+        # ques_rep = ques_rep[self.input_size-1]
+        # ques_rep = tf.reshape(ques_rep, [self.bsz, 1, self.hidden_size])
+        # episodic_memory = tf.identity(ques_rep)
+        # encoded_input = tf.transpose(encoded_input, [1,0,2])
         u = [hidden[0].squeeze()]   
+        episodic_memory = tf.identity(enc_query)
+
+        #encoded input reshape?? 
+        # https://github.com/JRC1995/Dynamic-Memory-Network-Plus/blob/master/DMN%2B.ipynb 
         for hop in range(self.max_hops):
             m_A = self.m_story[hop]
             if(len(list(u[-1].size()))==1): u[-1] = u[-1].unsqueeze(0) ## used for bsz = 1.
             u_temp = u[-1].unsqueeze(1).expand_as(m_A)
+    
+
             prob_lg = torch.sum(m_A*u_temp, 2)
+
             prob_   = self.softmax(prob_lg)
+
+            #prob = tf.transpose(prob, [2,0,1])
+            #context_vec = attention_based_GRU(tf.transpose(u))
+
             m_C = self.m_story[hop+1]
             temp.append(prob_)
             prob = prob_.unsqueeze(2).expand_as(m_C)
@@ -518,9 +512,19 @@ class DecoderMemNN(nn.Module):
                 p_vocab = self.W1(torch.cat((u[0], o_k),1))
             u_k = u[-1] + o_k
             u.append(u_k)
+
         p_ptr = prob_lg 
         return p_ptr, p_vocab, hidden
 
+    def episodic_update(ct, prev_m, q, wt, b):
+        m = T.nn.relu(wt[T.concatenate([prev_m, ct, q])]+b)
+    return m 
+
+    def episode_attend(self, x, g, h):
+        #r = sigmoid
+        #_h = tanh
+        ht = g*_h +(1. -g)*h
+    return ht
 
 class AttrProxy(object):
     """

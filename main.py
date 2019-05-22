@@ -19,7 +19,7 @@ print("loaded model!")
 #train
 avg_best = 0
 #300
-for epoch in range(15):
+for epoch in range(100):
     logging.info("Epoch:{}".format(epoch))  
     # Run the train function
     pbar = tqdm(enumerate(train),total=len(train))
